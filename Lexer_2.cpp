@@ -1005,6 +1005,20 @@ ParseNode* parseTryStatement(ParserState& state) {
                 addError(state, "Expected variable name after 'as' in except");
                 return node;
             }
+        }
+
+        // Must find ':' after type and optional alias
+        if (!match(state, ":")) {
+            addError(state, "Expected ':' after exception clause");
+            return node;
+        }
+    }
+
+    advance(state); // consume ':'
+    addChild(exceptNode, parseSuite(state)); // parse block under except
+    addChild(node, exceptNode); // attach to the main try/except tree
+}
+
 
     return node;
 }
@@ -1280,7 +1294,7 @@ void freeParseTree(ParseNode* node) {
 ////////////////////////////////////////////////////////////////MAIN////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-iint main() {
+int main() {
 
     string inputFile;
     cout << "Enter path to .py file: ";
