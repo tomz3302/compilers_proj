@@ -8,7 +8,9 @@
 #include <cctype>
 #include <fstream>
 #include <functional>
+
 using namespace std;
+
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////LEXICAL ANALYZER/////////////////////////////////////////////////////////////////////////
@@ -496,6 +498,20 @@ ParseNode* parseAssignment(ParserState& state) {
 
 // Add this helper function for error recovery
 void skipToNextStatement(ParserState& state) {
+    if (state.currentToken >= state.tokens.size()) {
+        return;
+    }
+
+    // Get the current line number
+    int currentLine = state.tokens[state.currentToken].lineNumber;
+    
+    // First skip past any tokens on the current line
+    while (state.currentToken < state.tokens.size() && 
+           state.tokens[state.currentToken].lineNumber == currentLine) {
+        advance(state);
+    }
+
+    // Now look for the start of the next valid statement
     while (state.currentToken < state.tokens.size()) {
         string currentValue = state.tokens[state.currentToken].value;
         string currentType = getTokenType(currentValue);
@@ -517,22 +533,27 @@ void skipToNextStatement(ParserState& state) {
         
         // Check for potential assignment or expression start
         if (currentType == "IDENTIFIER") {
-            // Look ahead for assignment
-            if (state.currentToken + 1 < state.tokens.size() && 
-                state.tokens[state.currentToken + 1].value == "=") {
-                break;  // Found assignment statement
+            // Only consider this a statement start if we're on a new line
+            if (state.currentToken > 0 && 
+                state.tokens[state.currentToken].lineNumber > currentLine) {
+                // Look ahead for assignment
+                if (state.currentToken + 1 < state.tokens.size() && 
+                    state.tokens[state.currentToken + 1].value == "=") {
+                    break;  // Found assignment statement
+                }
+                // Look ahead for function call
+                if (state.currentToken + 1 < state.tokens.size() && 
+                    state.tokens[state.currentToken + 1].value == "(") {
+                    break;  // Found function call expression
+                }
+                break;  // Found potential expression starting with identifier
             }
-            // Look ahead for function call
-            if (state.currentToken + 1 < state.tokens.size() && 
-                state.tokens[state.currentToken + 1].value == "(") {
-                break;  // Found function call expression
-            }
-            break;  // Found potential expression starting with identifier
         }
         
-        // Check for expressions starting with literals
-        if (currentType == "INTEGER" || currentType == "FLOAT" || 
-            currentType == "STRING" || match(state, "(")) {
+        // Check for expressions starting with literals on a new line
+        if ((currentType == "INTEGER" || currentType == "FLOAT" || 
+             currentType == "STRING" || match(state, "(")) &&
+            state.tokens[state.currentToken].lineNumber > currentLine) {
             break;  // Found expression starting with literal or parenthesis
         }
 
@@ -586,6 +607,7 @@ ParseNode* parseFactor(ParserState& state) {
                     return nullptr;
                 }
                 addError(state, "Expected ')'");
+                skipToNextStatement(state);
                 return nullptr;
             }
             advance(state);  // consume ')'
@@ -678,8 +700,34 @@ ParseNode* parseComparison(ParserState& state) {
     if (state.currentToken < state.tokens.size()) {
         string currentValue = state.tokens[state.currentToken].value;
         
+        // Check for first equals sign
+        if (match(state, "=")) {
+            advance(state);
+            // Check for second equals sign
+            if (match(state, "=")) {
+                advance(state);
+                ParseNode* opNode = createNode(NODE_OPERATOR, "==");
+                addChild(node, opNode);
+                
+                ParseNode* rightExpr = parseExpression(state);
+                if (!rightExpr) {
+                    addError(state, "Invalid right-hand side in comparison");
+                    skipToNextStatement(state);
+                    return nullptr;
+                }
+                addChild(node, rightExpr);
+                return node;
+            } else {
+                // Single equals found where comparison expected
+                addError(state, "Invalid comparison operator '=' (did you mean '=='?)");
+                skipToNextStatement(state);
+                return nullptr;
+            }
+        }
+        
+        // Handle other comparison operators
         if (match(state, ">") || match(state, "<") || match(state, ">=") ||
-            match(state, "<=") || match(state, "==") || match(state, "!=")) {
+            match(state, "<=") || match(state, "!=")) {
             string op = state.tokens[state.currentToken].value;
             advance(state);
             ParseNode* opNode = createNode(NODE_OPERATOR, op);
@@ -689,7 +737,7 @@ ParseNode* parseComparison(ParserState& state) {
             if (!rightExpr) {
                 addError(state, "Invalid right-hand side in comparison");
                 skipToNextStatement(state);
-                return node;
+                return nullptr;
             }
             addChild(node, rightExpr);
         } else if (currentValue.find(">") != string::npos || currentValue.find("<") != string::npos) {
@@ -733,10 +781,6 @@ ParseNode* parseExpression(ParserState& state) {
                 return nullptr;
             }
             addChild(node, nextTerm);
-        } else if (currentType == "IDENTIFIER" && !match(state, ",") && !match(state, ")") && !match(state, ":")) {
-            addError(state, "Invalid syntax - missing operator between expressions");
-            skipToNextStatement(state);
-            return nullptr;
         } else if (match(state, "/") && state.currentToken + 1 >= state.tokens.size()) {
             addError(state, "Incomplete expression - unexpected end after operator '/'");
             skipToNextStatement(state);
@@ -754,19 +798,19 @@ ParseNode* parseIfStatement(ParserState& state) {
     
     advance(state); // consume 'if'
     
-    // Check for condition start
-    if (!match(state, "(") && getTokenType(state.tokens[state.currentToken].value) != "IDENTIFIER" &&
-        getTokenType(state.tokens[state.currentToken].value) != "INTEGER" &&
-        getTokenType(state.tokens[state.currentToken].value) != "FLOAT") {
-        addError(state, "Expected condition after 'if'");
-        skipToNextStatement(state);
-        return node;
-    }
-
     // Parse the condition
-    ParseNode* condition = parseComparison(state);
+    ParseNode* condition = nullptr;
+    if (state.currentToken < state.tokens.size()) {
+        // First try to parse as a comparison
+        condition = parseComparison(state);
+        if (!condition) {
+            // If not a comparison, try as a regular expression
+            condition = parseExpression(state);
+        }
+    }
+    
     if (!condition) {
-        // Error already reported by parseComparison
+        addError(state, "Expected condition after 'if'");
         skipToNextStatement(state);
         return node;
     }
@@ -811,22 +855,21 @@ ParseNode* parseIfStatement(ParserState& state) {
 
 ParseNode* parseWhileStatement(ParserState& state) {
     ParseNode* node = createNode(NODE_WHILE);
-
     advance(state); // consume 'while'
     
-    // Check for condition start
-    if (!match(state, "(") && getTokenType(state.tokens[state.currentToken].value) != "IDENTIFIER" &&
-        getTokenType(state.tokens[state.currentToken].value) != "INTEGER" &&
-        getTokenType(state.tokens[state.currentToken].value) != "FLOAT") {
-        addError(state, "Expected condition after 'while'");
-        skipToNextStatement(state);
-        return node;
+    // Parse the condition
+    ParseNode* condition = nullptr;
+    if (state.currentToken < state.tokens.size()) {
+        // First try to parse as a comparison
+        condition = parseComparison(state);
+        if (!condition) {
+            // If not a comparison, try as a regular expression
+            condition = parseExpression(state);
+        }
     }
 
-    // Parse the condition
-    ParseNode* condition = parseExpression(state);
     if (!condition) {
-        // Error already reported by parseExpression
+        addError(state, "Expected condition after 'while'");
         skipToNextStatement(state);
         return node;
     }
@@ -1005,7 +1048,9 @@ ParseNode* parseTryStatement(ParserState& state) {
                 addError(state, "Expected variable name after 'as' in except");
                 return node;
             }
-
+        }
+    }
+    }
     return node;
 }
 
@@ -1151,6 +1196,7 @@ ParseNode* parseFunctionCall(ParserState& state) {
 
     if (!match(state, "(")) {
         addError(state, "Expected '(' after function name");
+        skipToNextStatement(state);
         return node;
     }
     advance(state);
@@ -1172,7 +1218,7 @@ ParseNode* parseFunctionCall(ParserState& state) {
             if (!match(state, ",")) {
                 if (!match(state, ")")) {
                     // Found something other than comma or closing parenthesis
-                    addError(state, "Invalid function call syntax - expected ',' between arguments");
+                    addError(state, "Invalid function call syntax");
                     skipToNextStatement(state);
                 }
                 break;
@@ -1243,6 +1289,7 @@ string nodeTypeToString(NodeType type) {
 }
 
 void printParseTree(ParseNode* node, string prefix = "", bool isLast = true) {
+    
     if (!node) return;
 
     cout << prefix;
@@ -1280,7 +1327,7 @@ void freeParseTree(ParseNode* node) {
 ////////////////////////////////////////////////////////////////MAIN////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-iint main() {
+int main() {
 
     string inputFile;
     cout << "Enter path to .py file: ";
