@@ -981,20 +981,30 @@ ParseNode* parseTryStatement(ParserState& state) {
 
     addChild(node, parseSuite(state));
 
-    // Parse 'except' clauses
+    // Parse optional 'except' clauses
     while (match(state, "except")) {
-        ParseNode* exceptNode = createNode(NODE_EXCEPT);
-        advance(state); // consume 'except'
+    ParseNode* exceptNode = createNode(NODE_EXCEPT);
+    advance(state); // consume 'except'
 
-        if (!match(state, ":")) {
-            addError(state, "Expected ':' after 'except'");
-            return node;
-        }
-        advance(state);
+    // Check if ':' is immediately after 'except' (i.e., a bare 'except:')
+    if (!match(state, ":")) {
+        // Parse the exception type (e.g., Exception, ValueError, etc.)
+        ParseNode* exceptionType = parseExpression(state); // assumes you have parseExpression()
+        addChild(exceptNode, exceptionType);
 
-        addChild(exceptNode, parseSuite(state));
-        addChild(node, exceptNode);
-    }
+        // If there's an 'as' clause, parse it
+        if (match(state, "as")) {
+            advance(state); // consume 'as'
+
+            // After 'as', we expect an identifier
+            if (state.currentToken < state.tokens.size() && getTokenType(state.tokens[state.currentToken].value) == "IDENTIFIER") {
+                ParseNode* alias = createNode(NODE_IDENTIFIER, state.tokens[state.currentToken].value);
+                advance(state); // consume identifier
+                addChild(exceptNode, alias);
+            } else {
+                addError(state, "Expected variable name after 'as' in except");
+                return node;
+            }
 
     return node;
 }
