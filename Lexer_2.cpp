@@ -629,22 +629,32 @@ ParseNode* parseTerm(ParserState& state) {
     ParseNode* node = createNode(NODE_TERM);
     ParseNode* factor = parseFactor(state);
     if (!factor) {
-        return nullptr;  // Propagate the error up
+        return nullptr;
     }
     addChild(node, factor);
 
     while (state.currentToken < state.tokens.size()) {
-        // Only accept valid multiplicative operators
+        string currentValue = state.tokens[state.currentToken].value;
+        
         if (match(state, "*") || match(state, "/")) {
             string op = state.tokens[state.currentToken].value;
             advance(state);
+            
+            // Check for incomplete expression after operator
+            if (state.currentToken >= state.tokens.size()) {
+                addError(state, "Incomplete expression after operator '" + op + "'");
+                skipToNextStatement(state);
+                return nullptr;
+            }
+            
             ParseNode* opNode = createNode(NODE_OPERATOR, op);
             addChild(node, opNode);
             
             ParseNode* nextFactor = parseFactor(state);
             if (!nextFactor) {
                 addError(state, "Invalid or incomplete expression after operator '" + op + "'");
-                return node;
+                skipToNextStatement(state);
+                return nullptr;
             }
             addChild(node, nextFactor);
         } else {
@@ -655,16 +665,61 @@ ParseNode* parseTerm(ParserState& state) {
     return node;
 }
 
+ParseNode* parseComparison(ParserState& state) {
+    ParseNode* node = createNode(NODE_COMPARISON);
+
+    ParseNode* leftExpr = parseExpression(state);
+    if (!leftExpr) {
+        return nullptr;
+    }
+    addChild(node, leftExpr);
+
+    // Handle comparison operators
+    if (state.currentToken < state.tokens.size()) {
+        string currentValue = state.tokens[state.currentToken].value;
+        
+        if (match(state, ">") || match(state, "<") || match(state, ">=") ||
+            match(state, "<=") || match(state, "==") || match(state, "!=")) {
+            string op = state.tokens[state.currentToken].value;
+            advance(state);
+            ParseNode* opNode = createNode(NODE_OPERATOR, op);
+            addChild(node, opNode);
+            
+            ParseNode* rightExpr = parseExpression(state);
+            if (!rightExpr) {
+                addError(state, "Invalid right-hand side in comparison");
+                skipToNextStatement(state);
+                return node;
+            }
+            addChild(node, rightExpr);
+        } else if (currentValue.find(">") != string::npos || currentValue.find("<") != string::npos) {
+            // Handle invalid operators like >>> or <<<
+            addError(state, "Invalid comparison operator '" + currentValue + "'");
+            skipToNextStatement(state);
+            return nullptr;
+        }
+    }
+
+    return node;
+}
+
 ParseNode* parseExpression(ParserState& state) {
+    if (state.currentToken >= state.tokens.size()) {
+        addError(state, "Unexpected end of input in expression");
+        return nullptr;
+    }
+
     ParseNode* node = createNode(NODE_EXP);
     ParseNode* term = parseTerm(state);
     if (!term) {
-        return nullptr;  // Propagate the error up
+        return nullptr;
     }
     addChild(node, term);
 
     while (state.currentToken < state.tokens.size()) {
-        // Only accept valid additive operators
+        string currentValue = state.tokens[state.currentToken].value;
+        string currentType = getTokenType(currentValue);
+        
         if (match(state, "+") || match(state, "-")) {
             string op = state.tokens[state.currentToken].value;
             advance(state);
@@ -674,35 +729,21 @@ ParseNode* parseExpression(ParserState& state) {
             ParseNode* nextTerm = parseTerm(state);
             if (!nextTerm) {
                 addError(state, "Invalid or incomplete expression after operator '" + op + "'");
-                return node;
+                skipToNextStatement(state);
+                return nullptr;
             }
             addChild(node, nextTerm);
-        } else if (match(state, ">>>") || match(state, "<<<") || match(state, ">>") || match(state, "<<")) {
-            // Handle invalid operators explicitly
-            addError(state, "Invalid operator '" + state.tokens[state.currentToken].value + "' in expression");
-            advance(state);
-            return node;
+        } else if (currentType == "IDENTIFIER" && !match(state, ",") && !match(state, ")") && !match(state, ":")) {
+            addError(state, "Invalid syntax - missing operator between expressions");
+            skipToNextStatement(state);
+            return nullptr;
+        } else if (match(state, "/") && state.currentToken + 1 >= state.tokens.size()) {
+            addError(state, "Incomplete expression - unexpected end after operator '/'");
+            skipToNextStatement(state);
+            return nullptr;
         } else {
             break;
         }
-    }
-
-    return node;
-}
-
-
-ParseNode* parseComparison(ParserState& state) {
-    ParseNode* node = createNode(NODE_COMPARISON);
-
-    addChild(node, parseExpression(state));
-
-    if (match(state, ">") || match(state, "<") || match(state, ">=") ||
-        match(state, "<=") || match(state, "==") || match(state, "!=")) {
-        string op = state.tokens[state.currentToken].value;
-        advance(state);
-        ParseNode* opNode = createNode(NODE_OPERATOR, op);
-        addChild(node, opNode);
-        addChild(node, parseExpression(state));
     }
 
     return node;
@@ -712,10 +753,34 @@ ParseNode* parseIfStatement(ParserState& state) {
     ParseNode* node = createNode(NODE_IF);
     
     advance(state); // consume 'if'
-    addChild(node, parseComparison(state));
     
+    // Check for condition start
+    if (!match(state, "(") && getTokenType(state.tokens[state.currentToken].value) != "IDENTIFIER" &&
+        getTokenType(state.tokens[state.currentToken].value) != "INTEGER" &&
+        getTokenType(state.tokens[state.currentToken].value) != "FLOAT") {
+        addError(state, "Expected condition after 'if'");
+        skipToNextStatement(state);
+        return node;
+    }
+
+    // Parse the condition
+    ParseNode* condition = parseComparison(state);
+    if (!condition) {
+        // Error already reported by parseComparison
+        skipToNextStatement(state);
+        return node;
+    }
+    addChild(node, condition);
+    
+    // Check for colon after condition
     if (!match(state, ":")) {
-        addError(state, "Expected ':' after if condition");
+        if (state.currentToken >= state.tokens.size()) {
+            addError(state, "Unexpected end of input - missing ':' after if condition");
+        } else {
+            string invalidToken = state.tokens[state.currentToken].value;
+            addError(state, "Expected ':' after if condition, found '" + invalidToken + "'");
+        }
+        skipToNextStatement(state);
         return node;
     }
     advance(state);
@@ -730,7 +795,8 @@ ParseNode* parseIfStatement(ParserState& state) {
     if (match(state, "else")) {
         advance(state);
         if (!match(state, ":")) {
-            addError(state, "Expected ':' after else");
+            addError(state, "Expected ':' after 'else'");
+            skipToNextStatement(state);
             return node;
         }
         advance(state);
@@ -747,16 +813,41 @@ ParseNode* parseWhileStatement(ParserState& state) {
     ParseNode* node = createNode(NODE_WHILE);
 
     advance(state); // consume 'while'
-    addChild(node, parseExpression(state));
+    
+    // Check for condition start
+    if (!match(state, "(") && getTokenType(state.tokens[state.currentToken].value) != "IDENTIFIER" &&
+        getTokenType(state.tokens[state.currentToken].value) != "INTEGER" &&
+        getTokenType(state.tokens[state.currentToken].value) != "FLOAT") {
+        addError(state, "Expected condition after 'while'");
+        skipToNextStatement(state);
+        return node;
+    }
 
+    // Parse the condition
+    ParseNode* condition = parseExpression(state);
+    if (!condition) {
+        // Error already reported by parseExpression
+        skipToNextStatement(state);
+        return node;
+    }
+    addChild(node, condition);
+
+    // Check for colon after condition
     if (!match(state, ":")) {
-        addError(state, "Expected ':' after while condition");
+        if (state.currentToken >= state.tokens.size()) {
+            addError(state, "Unexpected end of input - missing ':' after while condition");
+        } else {
+            string invalidToken = state.tokens[state.currentToken].value;
+            addError(state, "Expected ':' after while condition, found '" + invalidToken + "'");
+        }
+        skipToNextStatement(state);
         return node;
     }
     advance(state);
 
+    // Parse the while block
     ParseNode* suite = parseSuite(state);
-    if (suite != nullptr) {
+    if (suite) {
         addChild(node, suite);
     }
 
@@ -1055,17 +1146,35 @@ ParseNode* parseFunctionCall(ParserState& state) {
     advance(state);
 
     // Parse arguments
-    while (!match(state, ")")) {
-        addChild(node, parseExpression(state));
-        if (match(state, ",")) {
-            advance(state);
-        }
-        else if (!match(state, ")")) {
-            addError(state, "Expected ',' or ')'");
-            return node;
+    bool expectingExpression = true;
+    while (!match(state, ")") && state.currentToken < state.tokens.size()) {
+        if (expectingExpression) {
+            ParseNode* arg = parseExpression(state);
+            if (!arg) {
+                // Invalid argument expression
+                addError(state, "Invalid argument in function call");
+                skipToNextStatement(state);
+                return node;
+            }
+            addChild(node, arg);
+            expectingExpression = false;
+        } else {
+            if (!match(state, ",")) {
+                if (!match(state, ")")) {
+                    // Found something other than comma or closing parenthesis
+                    addError(state, "Invalid function call syntax - expected ',' between arguments");
+                    skipToNextStatement(state);
+                }
+                break;
+            }
+            advance(state);  // consume comma
+            expectingExpression = true;
         }
     }
-    advance(state); // consume ')'
+
+    if (state.currentToken < state.tokens.size() && match(state, ")")) {
+        advance(state);
+    }
 
     return node;
 }
