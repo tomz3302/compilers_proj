@@ -1280,11 +1280,13 @@ void freeParseTree(ParseNode* node) {
 ////////////////////////////////////////////////////////////////MAIN////////////////////////////////////////////////////////////////////////////
 ///////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-int main() {
+iint main() {
 
     string inputFile;
-    cout <<"LOML   " << "Enter path to .py file: ";
-    cin >> inputFile;
+    cout << "Enter path to .py file: ";
+    getline(cin, inputFile);
+
+    cout << "You entered: [" << inputFile << "]" << endl;
 
     ifstream file(inputFile);
     if (!file) {
@@ -1292,14 +1294,15 @@ int main() {
         return 1;
     }
 
-    string line, input;
+    // Read the file contents into a string
+    string fileContents, line;
     while (getline(file, line)) {
-        input += line + "\n";
+        fileContents += line + "\n";
     }
-
     file.close();
 
-    vector<lexeme> tokens = tokenize(commentsremover(input));
+    // Now pass the file contents to commentsremover and tokenize
+    vector<lexeme> tokens = tokenize(commentsremover(fileContents));
 
     // Print lexical analysis results
     cout << "\n=== Lexical Analysis Results ===\n";
