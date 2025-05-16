@@ -1048,9 +1048,7 @@ ParseNode* parseTryStatement(ParserState& state) {
                 addError(state, "Expected variable name after 'as' in except");
                 return node;
             }
-        }
-    }
-    }
+
     return node;
 }
 
